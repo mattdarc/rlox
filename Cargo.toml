@@ -1,0 +1,17 @@
+[package]
+name = "rlox"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "librlox"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rlox"
+path = "src/main.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bit-vec = "0.6"

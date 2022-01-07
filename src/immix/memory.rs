@@ -29,7 +29,7 @@ impl Block {
         self.size
     }
 
-    pub fn as_ptr(&self) -> *const u8 {
+    pub fn as_ptr(&self) -> *mut u8 {
         self.ptr.as_ptr()
     }
 }

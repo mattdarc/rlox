@@ -114,6 +114,15 @@ impl BumpBlock {
         return BlockState::Recyclable;
     }
 
+    /// Returns `true` if this block is the one that allocated the `ManagedPtr`, false otherwise.
+    pub fn contains(&self, ptr: &ManagedPtr) -> bool {
+        let block_start = self.mem.as_ptr() as usize;
+        let block_end = block_start + self.mem.size();
+        let ptr_addr = ptr.inner.as_ptr() as usize;
+
+        ptr_addr >= block_start && ptr_addr < block_end
+    }
+
     /// Return the first hole (group of unused lines) in the block starting at the first line.
     /// Returns `None` if no such hole exists
     fn find_first_hole(&self) -> Option<(usize, usize)> {
@@ -203,5 +212,16 @@ mod test {
             .expect("Could not allocate small ptr!");
         assert_eq!(bump_block.cursor, 1);
         assert_eq!(bump_block.limit, 2);
+    }
+
+    #[test]
+    fn block_contains_ptr() {
+        let mut bump_block = BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+        let ptr = bump_block.inner_alloc(2).expect("Could not allocate ptr!");
+        assert!(bump_block.contains(&ptr));
+
+        let other_bump_block =
+            BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+        assert!(!other_bump_block.contains(&ptr));
     }
 }

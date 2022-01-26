@@ -1,6 +1,7 @@
 use super::linemap::LineMap;
 use super::memory::{AllocError, Block};
 use super::policy::AllocationPolicy;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// Each block can be in one of 3 states:
@@ -34,22 +35,24 @@ impl ManagedPtr {
 }
 
 /// Bump-allocated block containing lines. Objects can be allocated in unused lines
-pub struct BumpBlock {
+pub struct BumpBlock<A: AllocationPolicy> {
     cursor: usize,
 
     /// The limit for immix is either the next occupied line, or the end of the block
     limit: usize,
     mem: Block,
     used_lines: LineMap,
+    _allocation_policy: PhantomData<A>,
 }
 
-impl BumpBlock {
-    pub fn new<A: AllocationPolicy>() -> Result<Self, AllocError> {
+impl<A: AllocationPolicy> BumpBlock<A> {
+    pub fn new() -> Result<Self, AllocError> {
         Ok(BumpBlock {
             cursor: 0,
             limit: A::LINES_PER_BLOCK,
             mem: Block::new(A::BLOCK_SIZE_BYTES)?,
             used_lines: LineMap::new(A::LINES_PER_BLOCK),
+            _allocation_policy: PhantomData::default(),
         })
     }
 
@@ -58,7 +61,7 @@ impl BumpBlock {
     pub fn inner_dealloc(&mut self, ptr: ManagedPtr) {
         self.used_lines.set_range_unused(
             ptr.inner.as_ptr() as usize - self.mem.as_ptr() as usize,
-            ptr.size,
+            (ptr.size + A::LINE_SIZE_BYTES - 1) / A::LINE_SIZE_BYTES,
         );
     }
 
@@ -81,17 +84,18 @@ impl BumpBlock {
 
         let next_used = self.used_lines.find_next_used(self.cursor);
         let num_lines_available = next_used - self.cursor;
+        let lines_required = (bytes + A::LINE_SIZE_BYTES - 1) / A::LINE_SIZE_BYTES;
 
-        if num_lines_available >= bytes {
+        if num_lines_available >= lines_required {
             // Allocate the bytes for this block, updating the cursor and limit accordingly. If the
             // cursor is greater than the limit, they will be updated lazily on request for new
             // memory
             let block_start = self.cursor;
-            let block_end_exclusive = block_start + bytes;
+            let block_end_exclusive = block_start + lines_required;
 
             self.used_lines
                 .set_range_used(block_start, block_end_exclusive);
-            self.cursor += bytes;
+            self.cursor += lines_required;
 
             // This operation is safe because we *know* mem is NonNull
             return Some(ManagedPtr::new(
@@ -144,14 +148,13 @@ impl BumpBlock {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::immix::test_allocator::TestAllocator;
 
-    struct TestAllocator;
-    impl AllocationPolicy for TestAllocator {
-        const BLOCK_SIZE_BYTES: usize = 256;
-        const LINE_SIZE_BYTES: usize = 64;
-    }
-
-    fn is_range_unused(block: &BumpBlock, start: usize, end: usize) -> bool {
+    fn is_range_unused<A: AllocationPolicy>(
+        block: &BumpBlock<A>,
+        start: usize,
+        end: usize,
+    ) -> bool {
         (start..end)
             .map(|i| block.used_lines.is_used(i))
             .all(|x| !x)
@@ -159,42 +162,49 @@ mod test {
 
     #[test]
     fn allocate_bytes() {
-        let mut bump_block = BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+        let mut bump_block = BumpBlock::<TestAllocator>::new().expect("Could not allocate block!");
         assert_eq!(bump_block.cursor, 0);
         assert_eq!(bump_block.limit, 4);
         assert!(is_range_unused(&bump_block, 0, 4));
 
-        let single_line_ptr = bump_block.inner_alloc(1).expect("Did not allocate line!");
+        let single_line_ptr = bump_block
+            .inner_alloc(TestAllocator::LINE_SIZE_BYTES)
+            .expect("Did not allocate line!");
         assert_eq!(single_line_ptr.inner.as_ptr(), bump_block.mem.as_ptr());
-        assert_eq!(single_line_ptr.size, 1);
+        assert_eq!(single_line_ptr.size, TestAllocator::LINE_SIZE_BYTES);
 
         assert_eq!(bump_block.cursor, 1);
         assert_eq!(bump_block.limit, 4);
 
-        let double_line_ptr = bump_block.inner_alloc(2).expect("Did not allocate line!");
+        let double_line_ptr = bump_block
+            .inner_alloc(2 * TestAllocator::LINE_SIZE_BYTES)
+            .expect("Did not allocate line!");
         assert_eq!(
             double_line_ptr.inner.as_ptr(),
             bump_block.mem.as_ptr().wrapping_add(1)
         );
-        assert_eq!(double_line_ptr.size, 2);
+        assert_eq!(double_line_ptr.size, 2 * TestAllocator::LINE_SIZE_BYTES);
 
         assert_eq!(bump_block.cursor, 3);
         assert_eq!(bump_block.limit, 4);
 
         // No slots are available for another double-line ptr
-        assert_eq!(bump_block.inner_alloc(2), None);
+        assert_eq!(
+            bump_block.inner_alloc(2 * TestAllocator::LINE_SIZE_BYTES),
+            None
+        );
         assert_eq!(bump_block.cursor, 3);
         assert_eq!(bump_block.limit, 4);
     }
 
     #[test]
     fn dealloc_bytes() {
-        let mut bump_block = BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+        let mut bump_block = BumpBlock::<TestAllocator>::new().expect("Could not allocate block!");
         let ptr1 = bump_block
-            .inner_alloc(2)
+            .inner_alloc(2 * TestAllocator::LINE_SIZE_BYTES)
             .expect("Could not allocate first ptr!");
         let _ptr2 = bump_block
-            .inner_alloc(2)
+            .inner_alloc(2 * TestAllocator::LINE_SIZE_BYTES)
             .expect("Could not allocate second ptr!");
 
         assert_eq!(bump_block.cursor, 4);
@@ -216,12 +226,12 @@ mod test {
 
     #[test]
     fn block_contains_ptr() {
-        let mut bump_block = BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+        let mut bump_block = BumpBlock::<TestAllocator>::new().expect("Could not allocate block!");
         let ptr = bump_block.inner_alloc(2).expect("Could not allocate ptr!");
         assert!(bump_block.contains(&ptr));
 
         let other_bump_block =
-            BumpBlock::new::<TestAllocator>().expect("Could not allocate block!");
+            BumpBlock::<TestAllocator>::new().expect("Could not allocate block!");
         assert!(!other_bump_block.contains(&ptr));
     }
 }

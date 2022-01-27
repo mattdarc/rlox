@@ -25,12 +25,21 @@ impl<A: AllocationPolicy> BlockList<A> {
         let new_block = self.blocks.last_mut().unwrap();
 
         Ok(new_block.inner_alloc(bytes).expect(&format!(
-            "Object too large to allocate in {:?}",
+            "Object too large to allocate in {:?} bytes",
             A::BLOCK_SIZE_BYTES
         )))
     }
 
-    pub fn dealloc(&mut self, ptr: ManagedPtr) {}
+    pub fn dealloc(&mut self, ptr: ManagedPtr) {
+        for block in self.blocks.iter_mut() {
+            if block.contains(&ptr) {
+                block.inner_dealloc(ptr);
+                return;
+            }
+        }
+
+        panic!("ManagedPtr is not owned by the BlockList!");
+    }
 }
 
 #[cfg(test)]
@@ -52,5 +61,16 @@ mod test {
         for i in 0..ptrs.len() {
             assert!(blist.blocks[i / 4].contains(&ptrs[i]));
         }
+
+        for ptr in ptrs.into_iter() {
+            blist.dealloc(ptr);
+        }
+
+        let mut ptrs = Vec::new();
+        for _ in 0..10 {
+            ptrs.push(blist.alloc(64).expect("Could not allocate block!"));
+        }
+        // We should *still* have 3 blocks in our list - we deallocated them and re-used the others
+        assert_eq!(blist.blocks.len(), 3);
     }
 }

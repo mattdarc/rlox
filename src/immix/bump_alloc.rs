@@ -34,6 +34,12 @@ impl ManagedPtr {
     }
 }
 
+impl std::fmt::Display for ManagedPtr {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "0x{:X}", self.inner.as_ptr() as usize)
+    }
+}
+
 /// Bump-allocated block containing lines. Objects can be allocated in unused lines
 pub struct BumpBlock<A: AllocationPolicy> {
     cursor: usize,
@@ -59,10 +65,15 @@ impl<A: AllocationPolicy> BumpBlock<A> {
     /// Mark the bytes pointed to by the `ptr` as unused, allowing them to be re-used by
     /// `inner_alloc`
     pub fn inner_dealloc(&mut self, ptr: ManagedPtr) {
-        self.used_lines.set_range_unused(
-            ptr.inner.as_ptr() as usize - self.mem.as_ptr() as usize,
-            (ptr.size + A::LINE_SIZE_BYTES - 1) / A::LINE_SIZE_BYTES,
-        );
+        assert!(self.contains(&ptr), "This block does not contain the ptr!");
+        let block_start =
+            ((ptr.inner.as_ptr() as usize - self.mem.as_ptr() as usize) + A::LINE_SIZE_BYTES - 1)
+                / A::LINE_SIZE_BYTES;
+        let block_end_exclusive =
+            block_start + (ptr.size + A::LINE_SIZE_BYTES - 1) / A::LINE_SIZE_BYTES;
+
+        self.used_lines
+            .set_range_unused(block_start, block_end_exclusive);
     }
 
     /// Try to alloc memory of the requested size in this block, starting at the cursor. If the
@@ -99,7 +110,13 @@ impl<A: AllocationPolicy> BumpBlock<A> {
 
             // This operation is safe because we *know* mem is NonNull
             return Some(ManagedPtr::new(
-                unsafe { NonNull::new_unchecked(self.mem.as_ptr().wrapping_add(block_start)) },
+                unsafe {
+                    NonNull::new_unchecked(
+                        self.mem
+                            .as_ptr()
+                            .wrapping_add(block_start * A::LINE_SIZE_BYTES),
+                    )
+                },
                 bytes,
             ));
         }
@@ -181,7 +198,10 @@ mod test {
             .expect("Did not allocate line!");
         assert_eq!(
             double_line_ptr.inner.as_ptr(),
-            bump_block.mem.as_ptr().wrapping_add(1)
+            bump_block
+                .mem
+                .as_ptr()
+                .wrapping_add(TestAllocator::LINE_SIZE_BYTES)
         );
         assert_eq!(double_line_ptr.size, 2 * TestAllocator::LINE_SIZE_BYTES);
 

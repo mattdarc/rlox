@@ -70,6 +70,18 @@ impl LineMap {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    pub fn print(&self) -> String {
+        self.0
+            .iter()
+            .map(|used| if used { "1" } else { "0" })
+            .fold(String::new(), |r, s| r + s)
+            .to_owned()
+    }
+
+    pub fn dump(&self) {
+        println!("{}", self.print());
+    }
 }
 
 #[cfg(test)]

@@ -30,6 +30,10 @@ impl<A: AllocationPolicy> BlockList<A> {
         )))
     }
 
+    /// Deallocate the `ptr`. This is not necessary as tracing will "implicitly" deallocate objects
+    /// when they are no longer used. At the beginning of tracing, we mark the whole line map as
+    /// unused, then trace through object roots marking used locations. At the end of tracing, we
+    /// remove unused blocks.
     pub fn dealloc(&mut self, ptr: ManagedPtr) {
         for block in self.blocks.iter_mut() {
             if block.contains(&ptr) {

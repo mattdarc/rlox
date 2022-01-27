@@ -5,4 +5,5 @@ mod immix;
 mod linemap;
 mod memory;
 mod policy;
+mod roots;
 mod test_allocator;
